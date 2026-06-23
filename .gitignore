@@ -1,0 +1,24 @@
+# --- Secrets: NEVER commit these ---
+.env
+service_account.json
+*service-account*.json
+*credentials*.json
+
+# Local runtime data (your personal mistakes + screenshots)
+data/
+mistakes_screenshots/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Spreadsheets except the shipped blank template
+*.xlsx
+!template/*.xlsx
+
+# Logs / OS cruft
+*.log
+.DS_Store
