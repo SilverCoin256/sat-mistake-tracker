@@ -52,7 +52,9 @@ Each logged mistake is appended to a Google Sheet you control; your mentor opens
 one link and watches it update live. Setup (~10 min, one time):
 
 1. **Google Cloud:** create a project at <https://console.cloud.google.com>,
-   then enable the **Google Sheets API** and **Google Drive API**.
+   then enable the **Google Sheets API** and **Cloud Storage API**. Cloud
+   Storage requires Cloud Billing to be enabled on the project (free-tier
+   usage for this is effectively free, but a payment method must be on file).
 2. **Service account:** IAM & Admin → Service Accounts → create one → add a
    **JSON key** → download it. Save it as `service_account.json` in this folder.
    (It's git-ignored — never commit it.)
@@ -62,17 +64,27 @@ one link and watches it update live. Setup (~10 min, one time):
    - the service-account email (found in the JSON, looks like
      `...@...iam.gserviceaccount.com`) → **Editor**
    - your mentor → **Viewer** or **Commenter**
-5. *(Optional, for screenshots)* create a Drive folder, share it with the
-   service account (**Editor**) and your mentor (**Viewer**), copy its folder ID.
+5. *(Optional, for screenshots)* create a Cloud Storage bucket, then grant it:
+   - the service-account email → **Storage Object Admin** (bucket-level IAM)
+   - `allUsers` → **Storage Object Viewer** (bucket-level IAM; makes uploaded
+     screenshots reachable by an unlisted URL — same exposure as a Drive
+     "anyone with the link" share)
+
+   Note: a bare service account **cannot** upload to Google Drive on a
+   personal (non-Workspace) account — Google blocks it with "Service
+   Accounts do not have storage quota", even if the folder is shared to it
+   by a human owner. Cloud Storage is the working alternative.
 6. Fill in `.env`:
    ```
    GOOGLE_SERVICE_ACCOUNT_JSON=service_account.json
    GSHEET_ID=<your sheet id>
    GSHEET_WORKSHEET=Mistakes
-   GDRIVE_FOLDER_ID=<optional folder id>
+   GCS_BUCKET=<optional bucket name>
    ```
 7. Restart the app. From now on every saved mistake also lands in the shared
-   Sheet. If Google is unreachable or unconfigured, local logging still works.
+   Sheet, with a second **Screenshots** tab embedding each image inline via
+   `=IMAGE()`. If Google is unreachable or unconfigured, local logging still
+   works.
 
 ## Security
 
