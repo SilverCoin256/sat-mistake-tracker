@@ -50,10 +50,14 @@ HEADERS = [
     "Fix Strategy", "Time Taken (Sec)", "Retest Status", "Notes", "Screenshot",
 ]
 
-# Lean column set for the dedicated visual-review tab — just enough to
-# identify the mistake next to its screenshot, not the full analysis.
+# Column set for the dedicated visual-review tab — the fields that matter
+# when reviewing a mistake next to its screenshot (full analysis stays in
+# the main Mistakes tab).
 SCREENSHOTS_TAB = "Screenshots"
-SCREENSHOTS_HEADERS = ["Logged At", "Section", "Topic", "Correct", "Selected", "Screenshot"]
+SCREENSHOTS_HEADERS = [
+    "Logged At", "Source", "Section", "Topic", "Subtopic",
+    "Correct", "Selected", "Error Type", "Fix Strategy", "Screenshot",
+]
 
 
 def _sa_path():
@@ -78,6 +82,18 @@ def status():
 def _hex(h):
     h = h.lstrip("#")
     return {"red": int(h[0:2], 16) / 255, "green": int(h[2:4], 16) / 255, "blue": int(h[4:6], 16) / 255}
+
+
+def _cell(value):
+    """
+    Neutralize spreadsheet formula injection. Rows are appended with
+    USER_ENTERED (needed so our own =HYPERLINK/=IMAGE cells work), which
+    means user-supplied text beginning with "=" or "+" would otherwise be
+    executed as a live formula. Prefixing an apostrophe forces plain text;
+    Sheets hides the apostrophe when displaying.
+    """
+    s = "" if value is None else str(value)
+    return "'" + s if s.startswith(("=", "+")) else s
 
 
 def _credentials():
@@ -150,7 +166,9 @@ def _format_screenshots_tab(creds, spreadsheet_id, tab_id):
             "range": {"sheetId": tab_id, "dimension": "ROWS", "startIndex": 1, "endIndex": 500},
             "properties": {"pixelSize": 260}, "fields": "pixelSize"}},
     ]
-    widths = [130, 100, 170, 70, 70, 440]  # Logged At, Section, Topic, Correct, Selected, Screenshot
+    # Logged At, Source, Section, Topic, Subtopic, Correct, Selected,
+    # Error Type, Fix Strategy, Screenshot
+    widths = [130, 175, 100, 150, 175, 68, 68, 185, 195, 440]
     for i, w in enumerate(widths):
         requests.append({"updateDimensionProperties": {
             "range": {"sheetId": tab_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
@@ -179,10 +197,14 @@ def _append_screenshot_row(creds, fields, image_url):
     ws = _open_screenshots_worksheet(creds)
     row = [
         datetime.now().strftime("%Y-%m-%d %H:%M"),
-        fields.get("section", ""),
-        fields.get("topic", ""),
-        fields.get("correct_answer", ""),
-        fields.get("your_answer", ""),
+        _cell(fields.get("source_site", "")),
+        _cell(fields.get("section", "")),
+        _cell(fields.get("topic", "")),
+        _cell(fields.get("subtopic", "")),
+        _cell(fields.get("correct_answer", "")),
+        _cell(fields.get("your_answer", "")),
+        _cell(fields.get("error_type", "")),
+        _cell(fields.get("fix_strategy", "")),
         f'=IMAGE("{image_url}")',
     ]
     ws.append_row(row, value_input_option="USER_ENTERED")
@@ -209,13 +231,13 @@ def append_row(fields, screenshot_path=None):
             screenshot_cell = f"(screenshot upload failed: {e})"
         row = [
             datetime.now().strftime("%Y-%m-%d %H:%M"),
-            fields.get("source_site", ""), fields.get("section", ""),
-            fields.get("correct_answer", ""), fields.get("your_answer", ""),
-            fields.get("topic", ""), fields.get("subtopic", ""),
-            fields.get("question_type", ""), fields.get("error_type", ""),
-            fields.get("root_cause", ""), fields.get("fix_strategy", ""),
-            fields.get("time_taken", ""), fields.get("retest_status", ""),
-            fields.get("notes", ""), screenshot_cell,
+            _cell(fields.get("source_site", "")), _cell(fields.get("section", "")),
+            _cell(fields.get("correct_answer", "")), _cell(fields.get("your_answer", "")),
+            _cell(fields.get("topic", "")), _cell(fields.get("subtopic", "")),
+            _cell(fields.get("question_type", "")), _cell(fields.get("error_type", "")),
+            _cell(fields.get("root_cause", "")), _cell(fields.get("fix_strategy", "")),
+            fields.get("time_taken", ""), _cell(fields.get("retest_status", "")),
+            _cell(fields.get("notes", "")), screenshot_cell,
         ]
         ws.append_row(row, value_input_option="USER_ENTERED")
         try:

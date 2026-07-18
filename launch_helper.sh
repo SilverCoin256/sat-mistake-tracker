@@ -4,7 +4,7 @@
 # Starts the local Flask server (if not already up), waits until it actually
 # responds, then opens the UI in a chromeless Chrome window.
 
-APP_DIR="/Users/shaurya/Downloads/sat-mistake-tracker"
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY="$APP_DIR/.venv/bin/python"
 URL="http://127.0.0.1:5001/"
 LOG="$APP_DIR/launch.log"

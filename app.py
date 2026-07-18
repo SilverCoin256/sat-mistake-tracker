@@ -265,7 +265,16 @@ def save_row():
         
         data = request.json or {}
         image_data = data.get("image")
-        
+
+        # Reject fully-empty submissions — otherwise a stray Save click logs a
+        # blank row locally AND pushes a blank row to the shared Google Sheet.
+        _text_fields = ("source_site", "section", "correct_answer", "your_answer",
+                        "topic", "subtopic", "question_type", "error_type",
+                        "root_cause", "fix_strategy", "time_taken", "notes")
+        if not image_data and not any(str(data.get(f, "")).strip() for f in _text_fields):
+            return jsonify({"success": False,
+                            "error": "Nothing to save — fill in at least one field or attach a screenshot."}), 400
+
         # Load the workbook
         wb = openpyxl.load_workbook(EXCEL_PATH)
         if "Error Log" not in wb.sheetnames:
