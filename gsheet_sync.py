@@ -1,40 +1,46 @@
 """
-Optional live sync to a shared Google Sheet (+ Drive for screenshots).
+Optional live sync to a shared Google Sheet (+ Cloud Storage for screenshots).
 
 Design goals:
   * Zero impact when unconfigured — every function degrades gracefully so the
     local Excel logging always works even if Google is unreachable.
   * Service-account auth (no browser/OAuth flow, no token refresh to manage).
-  * Scopes: spreadsheets + drive. Full drive (not drive.file) because the
-    screenshots folder is shared to the service account by email from the
-    user's own Drive, which drive.file's narrower visibility can't resolve
-    as an upload parent.
+  * Scopes: spreadsheets + Cloud Storage read/write.
+
+Screenshots use GCS, not Drive: a bare service account cannot upload to
+Drive on a personal (non-Workspace) account — Google blocks it with
+"Service Accounts do not have storage quota", even when the target folder
+is explicitly shared to the SA by a human owner (confirmed empirically,
+contradicts the commonly-cited "share a folder" workaround, which appears
+to only apply to Workspace/Shared-Drive setups). GCS has no such
+restriction — objects are billed to the GCP project, not a personal quota.
+Bucket objects are public-read (unlisted URL, same exposure level as a
+Drive "anyone with the link" share) so Sheets' IMAGE() formula and the
+mentor can both load them with no extra auth.
 
 Setup (see README "Live sharing"):
-  1. Create a Google Cloud service account, enable Sheets API + Drive API,
-     download its JSON key.
+  1. Create a Google Cloud service account, enable Sheets API + Cloud
+     Storage API, download its JSON key. Ensure the project has Cloud
+     Billing enabled (required by GCS, even on free-tier usage).
   2. Create a Google Sheet; share it with the service account email (Editor)
      and your mentor (Viewer/Commenter).
-  3. (Optional) Create a Drive folder for screenshots; share it with the
-     service account (Editor) and your mentor (Viewer). A second "Screenshots"
-     tab is auto-created in the sheet with each mistake's screenshot embedded
+  3. (Optional) Create a GCS bucket, grant the service account
+     roles/storage.objectAdmin on it, and grant allUsers
+     roles/storage.objectViewer for public read. A second "Screenshots" tab
+     is auto-created in the sheet with each mistake's screenshot embedded
      via =IMAGE(), alongside a lean subset of columns.
   4. Put the values in .env:
         GOOGLE_SERVICE_ACCOUNT_JSON=service_account.json
         GSHEET_ID=<spreadsheet id from its URL>
         GSHEET_WORKSHEET=Mistakes
-        GDRIVE_FOLDER_ID=<optional folder id>
+        GCS_BUCKET=<optional bucket name>
 """
 
 import os
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
-    # Full Drive scope (not drive.file): the screenshots folder is shared to
-    # the service account by email from the user's own Drive, not created or
-    # picker-granted by this app, so drive.file's narrower visibility can't
-    # see it as a valid upload parent.
-    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/devstorage.read_write",
 ]
 
 # Order of columns written to the shared sheet.
@@ -65,7 +71,7 @@ def status():
         "configured": is_enabled(),
         "has_credentials": os.path.exists(_sa_path()),
         "has_sheet_id": bool(os.getenv("GSHEET_ID")),
-        "drive_uploads": bool(os.getenv("GDRIVE_FOLDER_ID")),
+        "screenshot_uploads": bool(os.getenv("GCS_BUCKET")),
     }
 
 
@@ -97,33 +103,27 @@ def _open_worksheet(creds):
 
 def _upload_screenshot(creds, screenshot_path):
     """
-    Upload a screenshot to Drive (link-viewable) and return both:
+    Upload a screenshot to the GCS bucket (public-read) and return both:
       - hyperlink: a =HYPERLINK(...) formula for the main sheet's Screenshot column
-      - image_url: a direct-content thumbnail URL usable inside =IMAGE(...) for
-        the dedicated Screenshots tab
+      - image_url: a direct public URL usable inside =IMAGE(...) for the
+        dedicated Screenshots tab
     Returns {"hyperlink": "", "image_url": ""} when unconfigured or on failure —
     never raises (screenshot upload is always best-effort).
     """
-    folder = os.getenv("GDRIVE_FOLDER_ID")
-    if not folder or not screenshot_path or not os.path.exists(screenshot_path):
+    bucket = os.getenv("GCS_BUCKET")
+    if not bucket or not screenshot_path or not os.path.exists(screenshot_path):
         return {"hyperlink": "", "image_url": ""}
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
-    drive = build("drive", "v3", credentials=creds, cache_discovery=False)
-    meta = {"name": os.path.basename(screenshot_path), "parents": [folder]}
+    storage = build("storage", "v1", credentials=creds, cache_discovery=False)
+    object_name = f"screenshots/{os.path.basename(screenshot_path)}"
     media = MediaFileUpload(screenshot_path, mimetype="image/png")
-    f = drive.files().create(body=meta, media_body=media,
-                             fields="id, webViewLink").execute()
-    # Anyone with the link can view (mentor needs no extra grant).
-    drive.permissions().create(fileId=f["id"],
-                               body={"role": "reader", "type": "anyone"}).execute()
-    file_id = f.get("id", "")
-    link = f.get("webViewLink", "")
-    hyperlink = f'=HYPERLINK("{link}","View screenshot")' if link else ""
-    # drive.google.com/thumbnail serves a direct image (not the Drive viewer
-    # chrome), which is what Sheets' IMAGE() formula needs to render inline.
-    image_url = f"https://drive.google.com/thumbnail?id={file_id}&sz=w1000" if file_id else ""
-    return {"hyperlink": hyperlink, "image_url": image_url}
+    storage.objects().insert(bucket=bucket, name=object_name, media_body=media,
+                             fields="name").execute()
+    # Bucket-level allUsers:objectViewer IAM binding (set up once, outside the
+    # app) already makes every object public — no per-object ACL call needed.
+    url = f"https://storage.googleapis.com/{bucket}/{object_name}"
+    return {"hyperlink": f'=HYPERLINK("{url}","View screenshot")', "image_url": url}
 
 
 def _format_screenshots_tab(creds, spreadsheet_id, tab_id):
