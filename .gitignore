@@ -22,3 +22,6 @@ __pycache__/
 # Logs / OS cruft
 *.log
 .DS_Store
+
+# Isolated Chrome profile for the app window (local runtime state)
+.chrome-app-profile/
