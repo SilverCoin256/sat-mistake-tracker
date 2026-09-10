@@ -63,6 +63,11 @@
                     <img id="image-preview" class="image-preview hidden" src="" alt="Screenshot Preview">
                 </div>
 
+                <label class="page-mode-toggle" for="chk-page-mode">
+                    <input type="checkbox" id="chk-page-mode">
+                    <span>Full page — detect every <strong>circled</strong> question number as wrong</span>
+                </label>
+
                 <div class="action-buttons">
                     <button id="btn-grab-clipboard" class="btn btn-secondary">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -71,10 +76,25 @@
                         </svg>
                         Grab from macOS Clipboard
                     </button>
-                    
+
                     <button id="btn-analyze" class="btn btn-primary" disabled>
                         <span id="analyze-spinner" class="spinner hidden"></span>
                         <span id="analyze-btn-text">Analyze with Gemini</span>
+                    </button>
+                </div>
+            </section>
+
+            <!-- Full-page mode: one review card per detected circled question -->
+            <section id="page-results" class="section-card page-results hidden">
+                <div class="card-header">
+                    <h2>Detected Mistakes</h2>
+                    <span class="card-subtitle" id="page-results-subtitle">Review each before saving</span>
+                </div>
+                <div id="page-cards" class="page-cards"></div>
+                <div class="action-buttons">
+                    <button id="btn-save-all" class="btn btn-primary btn-block btn-glowing">
+                        <span id="save-all-spinner" class="spinner hidden"></span>
+                        <span id="save-all-btn-text">Save All to Tracker</span>
                     </button>
                 </div>
             </section>

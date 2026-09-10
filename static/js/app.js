@@ -1,6 +1,17 @@
 // Global variables
 let subtopicsList = [];
-let currentImageBase64 = null;
+let currentImageBase64 = null;      // display-res (1400px) — normal single-question flow
+let currentPageImageBase64 = null;  // higher-res (2200px) — full-page circled-question flow
+let cfg = null;                     // cached /config payload, for populating per-card selects
+let pageQueue = [];                 // [{ id, cardEl, image }] currently pending review/save
+
+const chkPageMode = document.getElementById("chk-page-mode");
+const pageResults = document.getElementById("page-results");
+const pageResultsSubtitle = document.getElementById("page-results-subtitle");
+const pageCardsEl = document.getElementById("page-cards");
+const btnSaveAll = document.getElementById("btn-save-all");
+const saveAllSpinner = document.getElementById("save-all-spinner");
+const saveAllBtnText = document.getElementById("save-all-btn-text");
 
 // Manual-only Error Type: user had no approach to the question.
 const UNSURE_OPTION = "Unsure — Didn't Know How to Solve";
@@ -114,6 +125,7 @@ function loadConfig() {
     fetch("/config")
         .then(res => res.json())
         .then(data => {
+            cfg = data;
             subtopicsList = data.subtopics;
             
             // Populate select menus
@@ -144,6 +156,23 @@ function loadConfig() {
             console.error("Error loading config:", err);
             showAlert("Failed to connect to local server backend.", "error");
         });
+}
+
+// Slice of the flat subtopics list that belongs to a given Topic.
+// Order/boundaries mirror constants.py's SUBTOPICS grouping.
+function subtopicsForTopic(topic) {
+    const ranges = {
+        "Algebra": [0, 13],
+        "Advanced Math": [13, 29],
+        "Problem Solving & Data Analysis": [29, 46],
+        "Geometry & Trigonometry": [46, 63],
+        "Information & Ideas": [63, 72],
+        "Craft & Structure": [72, 79],
+        "Expression of Ideas": [79, 88],
+        "Standard English Conventions": [88, undefined],
+    };
+    const r = ranges[topic];
+    return r ? subtopicsList.slice(r[0], r[1]) : [];
 }
 
 // Helper: Populate select element options
@@ -202,28 +231,7 @@ function setupEventListeners() {
 
     // Filtering Subtopics based on Topic selection
     fieldTopic.addEventListener("change", () => {
-        const topic = fieldTopic.value;
-        let filtered = [];
-        
-        if (topic === "Algebra") {
-            filtered = subtopicsList.slice(0, 13);
-        } else if (topic === "Advanced Math") {
-            filtered = subtopicsList.slice(13, 29);
-        } else if (topic === "Problem Solving & Data Analysis") {
-            filtered = subtopicsList.slice(29, 46);
-        } else if (topic === "Geometry & Trigonometry") {
-            filtered = subtopicsList.slice(46, 63);
-        } else if (topic === "Information & Ideas") {
-            filtered = subtopicsList.slice(63, 72);
-        } else if (topic === "Craft & Structure") {
-            filtered = subtopicsList.slice(72, 79);
-        } else if (topic === "Expression of Ideas") {
-            filtered = subtopicsList.slice(79, 88);
-        } else if (topic === "Standard English Conventions") {
-            filtered = subtopicsList.slice(88);
-        }
-        
-        populateSelect(fieldSubtopic, filtered);
+        populateSelect(fieldSubtopic, subtopicsForTopic(fieldTopic.value));
     });
 
     // Drag & drop images — handles files dragged from Finder AND images
@@ -306,14 +314,23 @@ function setupEventListeners() {
         applyUnsureMode(fieldErrorType.value === UNSURE_OPTION);
     });
 
-    // AI Analysis call
+    // Toggle button label/behavior for full-page mode
+    chkPageMode.addEventListener("change", () => {
+        analyzeBtnText.textContent = chkPageMode.checked ? "Detect Circled Questions" : "Analyze with Gemini";
+        if (!chkPageMode.checked) {
+            pageResults.classList.add("hidden");
+        }
+    });
+
+    // AI Analysis call — single question, or full-page circled-question mode
     btnAnalyze.addEventListener("click", () => {
+        if (chkPageMode.checked) { analyzePage(); return; }
         if (!currentImageBase64) return;
-        
+
         btnAnalyze.disabled = true;
         analyzeSpinner.classList.remove("hidden");
         analyzeBtnText.textContent = "Analyzing Image...";
-        
+
         fetch("/analyze", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -338,6 +355,8 @@ function setupEventListeners() {
             analyzeBtnText.textContent = "Analyze with Gemini";
         });
     });
+
+    btnSaveAll.addEventListener("click", saveAllPageCards);
 
     // Form Submission / Saving row to Excel
     mistakeForm.addEventListener("submit", (e) => {
@@ -437,8 +456,9 @@ function downscaleImage(dataUrl, maxDim = 1400) {
     });
 }
 
-function setLoadedImage(dataUrl, msg) {
+function setLoadedImage(dataUrl, pageDataUrl, msg) {
     currentImageBase64 = dataUrl;
+    currentPageImageBase64 = pageDataUrl;
     imagePreview.src = dataUrl;
     imagePreview.classList.remove("hidden");
     btnAnalyze.disabled = false;
@@ -447,12 +467,18 @@ function setLoadedImage(dataUrl, msg) {
     showAlert(msg, "success");
 }
 
-// Convert image file to base64, downscale, and display preview
+// Convert image file to base64, downscale (two sizes — see currentPageImageBase64), preview
 function handleImageFile(file) {
     const reader = new FileReader();
     reader.onload = async (e) => {
-        const small = await downscaleImage(e.target.result);
-        setLoadedImage(small, "Screenshot loaded. Click 'Analyze with Gemini' to auto-fill, or fill the fields and Save.");
+        // Full-page mode needs more resolution than the single-question flow:
+        // each circled question becomes its own crop, which stays legible at
+        // 2200px on the long edge even after being cropped down further.
+        const [small, page] = await Promise.all([
+            downscaleImage(e.target.result, 1400),
+            downscaleImage(e.target.result, 2200),
+        ]);
+        setLoadedImage(small, page, "Screenshot loaded. Click 'Analyze with Gemini' to auto-fill, or fill the fields and Save.");
     };
     reader.readAsDataURL(file);
 }
@@ -463,8 +489,11 @@ function grabClipboardImage() {
         .then(res => res.json())
         .then(data => {
             if (data.success) {
-                downscaleImage(data.image).then(small =>
-                    setLoadedImage(small, "Screenshot grabbed from macOS Clipboard!"));
+                Promise.all([
+                    downscaleImage(data.image, 1400),
+                    downscaleImage(data.image, 2200),
+                ]).then(([small, page]) =>
+                    setLoadedImage(small, page, "Screenshot grabbed from macOS Clipboard!"));
             } else {
                 showAlert(data.error || "Could not grab image.", "warning");
             }
@@ -544,6 +573,233 @@ function populateAnalysisFields(res) {
     if (res["Root Cause"]) fieldRootCause.value = res["Root Cause"];
     if (res["Fix Strategy"]) fieldFixStrategy.value = res["Fix Strategy"];
     if (res["Notes"]) fieldNotes.value = res["Notes"];
+}
+
+// ---- Full-page circled-question mode ----
+
+function analyzePage() {
+    if (!currentPageImageBase64) {
+        showAlert("Load a page screenshot first.", "warning");
+        return;
+    }
+    btnAnalyze.disabled = true;
+    analyzeSpinner.classList.remove("hidden");
+    analyzeBtnText.textContent = "Scanning for circled questions...";
+
+    fetch("/analyze-page", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: currentPageImageBase64 })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (!data.success) {
+            showAlert(data.error || "Page analysis failed.", "error");
+            return;
+        }
+        if (!data.questions.length) {
+            showAlert("No circled question numbers found on this page.", "warning");
+            pageResults.classList.add("hidden");
+            return;
+        }
+        renderPageCards(data.questions);
+        showAlert(`Found ${data.questions.length} circled question${data.questions.length === 1 ? "" : "s"}. Review before saving.`, "success");
+    })
+    .catch(err => showAlert("Error calling Gemini API backend: " + err.message, "error"))
+    .finally(() => {
+        btnAnalyze.disabled = false;
+        analyzeSpinner.classList.add("hidden");
+        analyzeBtnText.textContent = "Detect Circled Questions";
+    });
+}
+
+function renderPageCards(questions) {
+    pageCardsEl.innerHTML = "";
+    pageQueue = [];
+
+    questions.forEach((q, i) => {
+        const id = "pc" + i;
+        const image = q.image || currentPageImageBase64;  // fall back to full page if crop failed
+        const correct = (q["Correct Answer"] || "").toString();
+        const yours = (q["Your Answer"] || "").toString();
+
+        const card = document.createElement("div");
+        card.className = "page-card";
+        card.dataset.id = id;
+        card.innerHTML = `
+            <div class="page-card-head">
+                <span class="qnum">Q${escapeHtml(q["Question Number"] || "?")}</span>
+                <span class="status-pill">pending</span>
+                <button type="button" class="page-card-remove" title="Not actually wrong — remove">&times;</button>
+            </div>
+            ${image ? `<img class="page-card-thumb" src="${image}">` : ""}
+            <div class="form-group">
+                <label>Source / Site</label>
+                <input type="text" data-field="source_site" value="${escapeHtml(q["Source / Site"] || "")}">
+            </div>
+            <div class="split-row">
+                <div class="form-group">
+                    <label>Section</label>
+                    <select data-field="section">
+                        <option value="Math">Math</option>
+                        <option value="Reading & Writing">Reading & Writing</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Topic</label>
+                    <select data-field="topic"></select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Subtopic</label>
+                <select data-field="subtopic"></select>
+            </div>
+            <div class="split-row">
+                <div class="form-group">
+                    <label>Correct</label>
+                    <input type="text" data-field="correct_answer" value="${escapeHtml(correct)}">
+                </div>
+                <div class="form-group">
+                    <label>Your Answer</label>
+                    <input type="text" data-field="your_answer" value="${escapeHtml(yours)}">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Question Type</label>
+                <select data-field="question_type"></select>
+            </div>
+            <div class="form-group">
+                <label>Error Type</label>
+                <select data-field="error_type"></select>
+            </div>
+            <div class="split-row">
+                <div class="form-group">
+                    <label>Root Cause</label>
+                    <select data-field="root_cause"></select>
+                </div>
+                <div class="form-group">
+                    <label>Fix Strategy</label>
+                    <select data-field="fix_strategy"></select>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>Notes</label>
+                <textarea data-field="notes" rows="2">${escapeHtml(q["Notes"] || "")}</textarea>
+            </div>
+        `;
+
+        // Populate selects from the same cached lists the main form uses.
+        const topicSel = card.querySelector('[data-field="topic"]');
+        const subtopicSel = card.querySelector('[data-field="subtopic"]');
+        populateSelectPlain(topicSel, cfg.topics, q["Topic"]);
+        populateSelectPlain(card.querySelector('[data-field="question_type"]'), cfg.question_types, q["Question Type"]);
+        populateSelectPlain(card.querySelector('[data-field="error_type"]'), cfg.error_types, q["Error Type"]);
+        populateSelectPlain(card.querySelector('[data-field="root_cause"]'), cfg.root_causes, q["Root Cause"]);
+        populateSelectPlain(card.querySelector('[data-field="fix_strategy"]'), cfg.fix_strategies, q["Fix Strategy"]);
+        populateSelectPlain(subtopicSel, subtopicsForTopic(q["Topic"]), q["Subtopic"]);
+        topicSel.addEventListener("change", () => populateSelectPlain(subtopicSel, subtopicsForTopic(topicSel.value)));
+        if (q["Section"] === "Reading & Writing") card.querySelector('[data-field="section"]').value = "Reading & Writing";
+
+        card.querySelector(".page-card-remove").addEventListener("click", () => {
+            card.remove();
+            pageQueue = pageQueue.filter(x => x.id !== id);
+            updatePageResultsSubtitle();
+        });
+
+        pageCardsEl.appendChild(card);
+        pageQueue.push({ id, cardEl: card, image });
+    });
+
+    pageResults.classList.remove("hidden");
+    updatePageResultsSubtitle();
+}
+
+// Like populateSelect but takes a plain items array + the value to preselect
+// (card selects have no fixed placeholder option to preserve).
+function populateSelectPlain(element, items, selected) {
+    element.innerHTML = "";
+    (items || []).forEach(item => {
+        const opt = document.createElement("option");
+        opt.value = item;
+        opt.textContent = item;
+        if (item === selected) opt.selected = true;
+        element.appendChild(opt);
+    });
+}
+
+function escapeHtml(s) {
+    return (s ?? "").toString()
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function updatePageResultsSubtitle() {
+    pageResultsSubtitle.textContent = pageQueue.length
+        ? `${pageQueue.length} question${pageQueue.length === 1 ? "" : "s"} ready to save`
+        : "All done";
+}
+
+function cardToPayload(cardEl, image) {
+    const get = (f) => cardEl.querySelector(`[data-field="${f}"]`).value.trim();
+    return {
+        image,
+        source_site: get("source_site"),
+        section: get("section"),
+        correct_answer: get("correct_answer"),
+        your_answer: get("your_answer"),
+        topic: get("topic"),
+        subtopic: get("subtopic"),
+        question_type: get("question_type"),
+        error_type: get("error_type"),
+        root_cause: get("root_cause"),
+        fix_strategy: get("fix_strategy"),
+        time_taken: "",
+        retest_status: "Not Reviewed",
+        notes: get("notes"),
+    };
+}
+
+// Sequential (not parallel) — keeps Excel row-append order stable and avoids
+// hammering the Google Sheets API with a burst of concurrent writes.
+async function saveAllPageCards() {
+    if (!pageQueue.length) { showAlert("Nothing left to save.", "warning"); return; }
+
+    btnSaveAll.disabled = true;
+    saveAllSpinner.classList.remove("hidden");
+    let ok = 0, failed = 0;
+
+    for (const item of [...pageQueue]) {
+        const payload = cardToPayload(item.cardEl, item.image);
+        saveAllBtnText.textContent = `Saving ${ok + failed + 1} / ${pageQueue.length}...`;
+        try {
+            const res = await fetch("/save", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (data.success) {
+                ok++;
+                item.cardEl.classList.add("saved");
+                item.cardEl.querySelector(".status-pill").textContent = "saved";
+                item.cardEl.querySelectorAll("input,select,textarea,button").forEach(el => el.disabled = true);
+            } else {
+                failed++;
+                item.cardEl.classList.add("errored");
+                item.cardEl.querySelector(".status-pill").textContent = "failed";
+            }
+        } catch (err) {
+            failed++;
+            item.cardEl.classList.add("errored");
+            item.cardEl.querySelector(".status-pill").textContent = "failed";
+        }
+    }
+
+    pageQueue = pageQueue.filter(item => !item.cardEl.classList.contains("saved"));
+    updatePageResultsSubtitle();
+    saveAllSpinner.classList.add("hidden");
+    saveAllBtnText.textContent = "Save All to Tracker";
+    btnSaveAll.disabled = false;
+    showAlert(`Saved ${ok} question${ok === 1 ? "" : "s"}${failed ? `, ${failed} failed` : ""}.`, failed ? "warning" : "success");
 }
 
 // Show Alert Banner

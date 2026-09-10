@@ -258,6 +258,144 @@ Do not wrap the output in markdown block wrappers. Return raw JSON content only.
     prefix = f"All {len(keys)} keys failed. " if len(keys) > 1 else ""
     return jsonify({"success": False, "error": prefix + last_error}), 200
 
+
+def _crop_bbox(img, bbox, pad_frac=0.03):
+    """bbox = [ymin,xmin,ymax,xmax] on a 0-1000 grid (Gemini's convention).
+    Pads slightly and clamps to image bounds; returns a PIL crop."""
+    w, h = img.size
+    ymin, xmin, ymax, xmax = bbox
+    pad_y = (ymax - ymin) * pad_frac
+    pad_x = (xmax - xmin) * pad_frac
+    ymin, xmin = max(0, ymin - pad_y), max(0, xmin - pad_x)
+    ymax, xmax = min(1000, ymax + pad_y), min(1000, xmax + pad_x)
+    left, top = int(xmin / 1000 * w), int(ymin / 1000 * h)
+    right, bottom = int(xmax / 1000 * w), int(ymax / 1000 * h)
+    if right <= left or bottom <= top:
+        return None
+    return img.crop((left, top, right, bottom))
+
+
+@app.route('/analyze-page', methods=['POST'])
+def analyze_page():
+    """
+    Take one full worksheet/page screenshot, find every question whose
+    number is circled (the student's own "this one's wrong" mark), and
+    return one auto-filled draft per circled question — each with its own
+    cropped screenshot — for the user to review before saving.
+    """
+    keys = gemini_keys()
+    if not keys:
+        return jsonify({"success": False, "error": "Gemini API key is not configured. Please set it in the Settings panel."}), 400
+
+    data = request.json or {}
+    image_data = data.get("image")
+    if not image_data:
+        return jsonify({"success": False, "error": "No image data received"}), 400
+
+    if "," in image_data:
+        _, encoded_string = image_data.split(",", 1)
+    else:
+        encoded_string = image_data
+
+    try:
+        full_img = PILImage.open(io.BytesIO(base64.b64decode(encoded_string))).convert("RGB")
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read the uploaded page image: {e}"}), 400
+
+    prompt = f"""
+You are an expert SAT tutor scanning ONE full page of practice-test questions
+(a screenshot or photo of a worksheet, printed test, or app screen — possibly
+in a two-column layout).
+
+Find every question whose QUESTION NUMBER has a circle / loop / ring hand-drawn
+around it. That circle is the student's own mark meaning "I got this one
+wrong" — it is the ONLY signal that decides whether a question is included.
+- A circled number → include it, regardless of whether anything else on that
+  question is marked.
+- Underlines, boxes around answer choices, or circles around an answer choice
+  (not the number) are the student's scratch work, not the wrong/right signal
+  — ignore them for inclusion, but you may still use them to guess "Your
+  Answer" if a circled/selected choice is visible for an included question.
+- A question with NO circle on its number is one the student got right —
+  DO NOT include it.
+- If truly nothing on the page is circled, return an empty "questions" array.
+
+For EACH circled question, return one object with:
+- "Question Number": the number as printed (e.g. "17")
+- "bbox": [ymin, xmin, ymax, xmax] on a 0-1000 normalized grid, tightly
+  bounding that ENTIRE question — its number, prompt text, and all answer
+  choices — but not neighboring questions.
+- "Source / Site": guess the platform/source from visual cues (e.g.
+  "Bluebook Test 1", "Handwritten Worksheet", "Khan Academy"). Default to a
+  short descriptive guess if unclear.
+- "Section": exactly "Math" or "Reading & Writing"
+- "Correct Answer": solve it yourself — the actual correct answer (e.g. A/B/C/D
+  or a number for a student-produced response)
+- "Your Answer": the answer the student appears to have picked (circled/boxed
+  choice, or a handwritten value). Return "" if nothing indicates a pick.
+- "Topic": EXACTLY one of {json.dumps(TOPICS)}
+- "Subtopic": EXACTLY one of {json.dumps(SUBTOPICS)}
+- "Question Type": EXACTLY one of {json.dumps(QUESTION_TYPES)}
+- "Error Type": best guess from {json.dumps(ERROR_TYPES)}
+- "Root Cause": best guess from {json.dumps(ROOT_CAUSES)}
+- "Fix Strategy": best guess from {json.dumps(FIX_STRATEGIES)}
+- "Notes": one concise sentence on the concept and likely reason for the miss
+
+Return strictly a JSON object: {{"questions": [ ... ]}}. No markdown fences.
+"""
+
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {"inlineData": {"mimeType": "image/png", "data": encoded_string}}
+            ]
+        }],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "thinkingConfig": {"thinkingBudget": 512},  # locating circled numbers benefits from a little thinking
+        }
+    }
+
+    base_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    last_error = "No Gemini keys available."
+    parsed = None
+    for idx, api_key in enumerate(keys, 1):
+        try:
+            response = requests.post(f"{base_url}?key={api_key}", headers={"Content-Type": "application/json"},
+                                     json=payload, timeout=180)
+            if response.status_code == 200:
+                content = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+                parsed = json.loads(content.strip())
+                break
+            last_error = friendly_gemini_error(response)
+        except Exception as e:
+            last_error = f"Could not reach Gemini (key {idx}): {e}"
+
+    if parsed is None:
+        prefix = f"All {len(keys)} keys failed. " if len(keys) > 1 else ""
+        return jsonify({"success": False, "error": prefix + last_error}), 200
+
+    questions = parsed.get("questions", []) if isinstance(parsed, dict) else []
+    results = []
+    for q in questions[:30]:  # sanity cap
+        bbox = q.get("bbox")
+        crop_b64 = None
+        if isinstance(bbox, list) and len(bbox) == 4:
+            try:
+                crop = _crop_bbox(full_img, [float(v) for v in bbox])
+                if crop is not None:
+                    buf = io.BytesIO()
+                    crop.save(buf, format="PNG")
+                    crop_b64 = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+            except Exception:
+                crop_b64 = None
+        q["image"] = crop_b64  # None → frontend falls back to the full page image
+        results.append(q)
+
+    return jsonify({"success": True, "questions": results, "key_used": idx})
+
+
 @app.route('/save', methods=['POST'])
 def save_row():
     try:

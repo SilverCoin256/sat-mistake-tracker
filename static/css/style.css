@@ -586,3 +586,86 @@ textarea {
     from { transform: translateY(-10px); opacity: 0; }
     to { transform: translateY(0); opacity: 1; }
 }
+
+/* ---- Full-page circled-question mode ---- */
+.page-mode-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin: 0.9rem 0 0.2rem;
+    padding: 0.6rem 0.8rem;
+    background: rgba(59, 130, 246, 0.06);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.page-mode-toggle input { accent-color: var(--primary-color); width: 15px; height: 15px; flex-shrink: 0; }
+.page-mode-toggle strong { color: var(--text-primary); }
+
+.page-results { grid-column: 1 / -1; }
+.page-results.hidden { display: none; }
+
+.page-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.2rem;
+}
+
+.page-card {
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 0.9rem;
+    background: rgba(255, 255, 255, 0.02);
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    transition: opacity 0.2s, border-color 0.2s;
+}
+.page-card.saved { border-color: var(--success-color); opacity: 0.55; }
+.page-card.errored { border-color: var(--danger-color); }
+
+.page-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+.page-card-head .qnum {
+    font-family: 'Outfit', sans-serif;
+    font-weight: 700;
+    color: var(--primary-color);
+    font-size: 0.95rem;
+}
+.page-card-head .status-pill {
+    font-size: 0.7rem;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--kbd-bg);
+    color: var(--text-muted);
+}
+.page-card.saved .status-pill { background: var(--success-color); color: #fff; }
+.page-card.errored .status-pill { background: var(--danger-color); color: #fff; }
+.page-card-remove {
+    background: none; border: none; color: var(--text-muted);
+    cursor: pointer; font-size: 1.1rem; line-height: 1; padding: 2px 6px;
+}
+.page-card-remove:hover { color: var(--danger-color); }
+
+.page-card img.page-card-thumb {
+    width: 100%;
+    max-height: 160px;
+    object-fit: contain;
+    border-radius: 6px;
+    background: #fff;
+    border: 1px solid var(--border-color);
+}
+
+.page-card .form-group { gap: 0.25rem; }
+.page-card .split-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+.page-card select, .page-card input, .page-card textarea {
+    font-size: 0.78rem;
+    padding: 0.45rem 0.5rem;
+}
