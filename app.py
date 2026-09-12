@@ -258,15 +258,27 @@ Do not wrap the output in markdown block wrappers. Return raw JSON content only.
     return jsonify({"success": False, "error": prefix + last_error}), 200
 
 
-def _crop_bbox(img, bbox, pad_frac=0.03):
+def _crop_bbox(img, bbox, pad_top=0.04, pad_bottom=0.14, pad_left=0.04, pad_right=0.10):
     """bbox = [ymin,xmin,ymax,xmax] on a 0-1000 grid (Gemini's convention).
-    Pads slightly and clamps to image bounds; returns a PIL crop."""
+    Pads and clamps to image bounds; returns a PIL crop.
+
+    Bottom and right padding are deliberately much larger than top/left:
+    the consistent real-world failure mode (verified against actual saved
+    screenshots, in both directions) is the model's box landing right at
+    the end of the question's PROMPT TEXT — cutting off answer choices
+    stacked below (short ymax) or laid out in a row to the right (short
+    xmax) — not imprecision evenly distributed on all four sides. A
+    wrong-but-generous crop (a sliver of the next question, extra margin)
+    is a minor annoyance; a wrong-but-short crop (missing the answer the
+    student picked) makes the saved row useless. Pad accordingly.
+    """
     w, h = img.size
     ymin, xmin, ymax, xmax = bbox
-    pad_y = (ymax - ymin) * pad_frac
-    pad_x = (xmax - xmin) * pad_frac
-    ymin, xmin = max(0, ymin - pad_y), max(0, xmin - pad_x)
-    ymax, xmax = min(1000, ymax + pad_y), min(1000, xmax + pad_x)
+    height, width = ymax - ymin, xmax - xmin
+    ymin = max(0, ymin - height * pad_top)
+    ymax = min(1000, ymax + height * pad_bottom)
+    xmin = max(0, xmin - width * pad_left)
+    xmax = min(1000, xmax + width * pad_right)
     left, top = int(xmin / 1000 * w), int(ymin / 1000 * h)
     right, bottom = int(xmax / 1000 * w), int(ymax / 1000 * h)
     if right <= left or bottom <= top:
@@ -306,9 +318,29 @@ wrong" — it is the ONLY signal that decides whether a question is included.
 
 For EACH circled question, return one object with:
 - "Question Number": the number as printed (e.g. "17")
-- "bbox": [ymin, xmin, ymax, xmax] on a 0-1000 normalized grid, tightly
-  bounding that ENTIRE question — its number, prompt text, and all answer
-  choices — but not neighboring questions.
+- "bbox": [ymin, xmin, ymax, xmax] on a 0-1000 normalized grid, bounding
+  this question's COMPLETE visual block: its number, the full prompt text
+  (including any passage/graph/table above it that the question refers
+  to), AND every answer choice A/B/C/D below it — or, for a
+  student-produced-response question with no lettered choices, down
+  through its blank input line/box.
+  THE MOST COMMON MISTAKE IS STOPPING TOO EARLY, in EITHER direction:
+  - Vertically: do not set ymax at the end of the question's prompt
+    sentence — that is only the middle of the block, not the end. Keep
+    going down until you have passed the LAST answer choice (or blank
+    line) belonging to this question.
+  - Horizontally: answer choices are very often laid out in a single ROW
+    (e.g. "(A) 1/5    (B) 2/5    (C) 5/2    (D) 4"), not stacked — in that
+    layout xmax must reach past the RIGHTMOST choice (often D, at the far
+    right of the page/column), not just past the width of the prompt text
+    above it. A narrow xmax that fits the question sentence but clips the
+    last answer choice is just as broken as a short ymax.
+  When in doubt, extend the box further rather than less on any side: a
+  box that spills a little into the next question or the page margin is a
+  minor cosmetic issue; a box that cuts off this question's own answer
+  choices makes the saved record useless. Also give ymin a little
+  headroom above the circled number itself rather than starting exactly
+  at its edge.
 - "Section": exactly "Math" or "Reading & Writing"
 - "Correct Answer": solve it yourself — the actual correct answer (e.g. A/B/C/D
   or a number for a student-produced response)
@@ -457,7 +489,7 @@ def analyze_pdf():
         return jsonify({"success": False,
                         "error": f"That PDF has {doc.page_count} pages — this tool caps out at {MAX_PAGES} per upload to keep the scan fast. Split it and upload in batches."}), 400
 
-    TARGET_LONG_EDGE = 2200  # matches the single-page flow's resolution target
+    TARGET_LONG_EDGE = 3000  # matches the single-page flow's resolution target
     total_pages = doc.page_count
     all_results = []
     page_errors = []

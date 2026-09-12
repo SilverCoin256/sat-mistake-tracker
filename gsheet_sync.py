@@ -51,16 +51,24 @@ HEADERS = [
 ]
 
 # Column set for the dedicated visual-review tab. Screenshot leads (it's the
-# point of this tab), Open is a real hyperlink to the raw image — Sheets'
-# =IMAGE() cells render a picture but copying one only copies the formula
-# text, never actual pixels (confirmed empirically: `clipboard info` after
-# Cmd+C on an =IMAGE() cell shows HTML/text only, no image type at all).
-# Opening the raw URL in a new tab gives a real <img>, which Chrome's
-# right-click "Copy image" puts on the clipboard as actual image bytes.
+# point of this tab); "Image Link" is the RAW URL as plain text, not a
+# =HYPERLINK() formula. Two things were verified empirically, not assumed:
+# (1) copying an =IMAGE() cell puts only HTML/formula text on the clipboard
+#     (Cmd+C then `osascript -e 'clipboard info'` showed no image type at
+#     all) — there's no way to paste a real picture out of one.
+# (2) =HYPERLINK() cells are NOT a reliable fix for that: Sheets' click-to-
+#     navigate affordance for a hyperlink cell (chip-on-hover, click again
+#     to open) turned out to be inconsistent — repeated real attempts
+#     (plain click, re-click, Cmd+click, hover) failed to open the link.
+# A plain-text cell has none of that ambiguity: select it, Cmd+C copies the
+# literal URL text (guaranteed — it's not a formula or rendered object),
+# paste into a new tab's address bar, and that page is a real <img> where
+# right-click → Copy Image puts actual pixels on the clipboard. One extra
+# manual step (paste into the address bar) traded for zero flakiness.
 SCREENSHOTS_TAB = "Screenshots"
 SCREENSHOTS_HEADERS = [
-    "Screenshot", "Open", "Logged At", "Source", "Section", "Topic",
-    "Subtopic", "Correct", "Selected", "Error Type", "Fix Strategy",
+    "Screenshot", "Image Link (copy, paste in new tab)", "Logged At", "Source",
+    "Section", "Topic", "Subtopic", "Correct", "Selected", "Error Type", "Fix Strategy",
 ]
 
 
@@ -182,17 +190,17 @@ def _format_screenshots_tab(creds, spreadsheet_id, tab_id):
         {"repeatCell": {
             "range": {"sheetId": tab_id, "startRowIndex": 1, "endRowIndex": 500, "startColumnIndex": 1, "endColumnIndex": 2},
             "cell": {"userEnteredFormat": {
-                "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
-                "textFormat": {"foregroundColor": _hex("1155CC"), "bold": True, "fontSize": 11}}},
-            "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment,textFormat)"}},
+                "horizontalAlignment": "LEFT", "verticalAlignment": "MIDDLE", "wrapStrategy": "WRAP",
+                "textFormat": {"foregroundColor": _hex("444444"), "fontSize": 8}}},
+            "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment,wrapStrategy,textFormat)"}},
         {"repeatCell": {
             "range": {"sheetId": tab_id, "startRowIndex": 1, "endRowIndex": 500, "startColumnIndex": 2, "endColumnIndex": 11},
             "cell": {"userEnteredFormat": {"verticalAlignment": "MIDDLE", "wrapStrategy": "WRAP", "textFormat": {"fontSize": 10}}},
             "fields": "userEnteredFormat(verticalAlignment,wrapStrategy,textFormat)"}},
     ]
-    # Screenshot, Open, Logged At, Source, Section, Topic, Subtopic,
+    # Screenshot, Image Link, Logged At, Source, Section, Topic, Subtopic,
     # Correct, Selected, Error Type, Fix Strategy
-    widths = [620, 80, 125, 165, 95, 145, 170, 65, 65, 180, 190]
+    widths = [620, 160, 125, 165, 95, 145, 170, 65, 65, 180, 190]
     for i, w in enumerate(widths):
         requests.append({"updateDimensionProperties": {
             "range": {"sheetId": tab_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
@@ -219,9 +227,10 @@ def _append_screenshot_row(creds, fields, image_url):
         return
     from datetime import datetime
     ws = _open_screenshots_worksheet(creds)
+    target_row = len(ws.get_all_values()) + 1
     row = [
         f'=IMAGE("{image_url}")',
-        f'=HYPERLINK("{image_url}","Open ↗")',
+        "",  # link column filled separately below, as RAW so it stays plain text
         datetime.now().strftime("%Y-%m-%d %H:%M"),
         _cell(fields.get("source_site", "")),
         _cell(fields.get("section", "")),
@@ -233,6 +242,10 @@ def _append_screenshot_row(creds, fields, image_url):
         _cell(fields.get("fix_strategy", "")),
     ]
     ws.append_row(row, value_input_option="USER_ENTERED")
+    # USER_ENTERED (needed above so =IMAGE renders) auto-linkifies a bare URL
+    # into a clickable rich-text hyperlink — the exact fragility this design
+    # avoids. RAW mode on just this cell keeps it inert, selectable text.
+    ws.update(f"B{target_row}", [[image_url]], value_input_option="RAW")
 
 
 def append_row(fields, screenshot_path=None):

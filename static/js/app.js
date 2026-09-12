@@ -1,7 +1,7 @@
 // Global variables
 let subtopicsList = [];
 let currentImageBase64 = null;      // display-res (1400px) — normal single-question flow
-let currentPageImageBase64 = null;  // higher-res (2200px) — full-page circled-question flow
+let currentPageImageBase64 = null;  // higher-res (3000px) — full-page circled-question flow
 let cfg = null;                     // cached /config payload, for populating per-card selects
 let pageQueue = [];                 // [{ id, cardEl, image }] currently pending review/save
 
@@ -485,10 +485,10 @@ function handleImageFile(file) {
     reader.onload = async (e) => {
         // Full-page mode needs more resolution than the single-question flow:
         // each circled question becomes its own crop, which stays legible at
-        // 2200px on the long edge even after being cropped down further.
+        // 3000px on the long edge even after being cropped down further.
         const [small, page] = await Promise.all([
             downscaleImage(e.target.result, 1400),
-            downscaleImage(e.target.result, 2200),
+            downscaleImage(e.target.result, 3000),
         ]);
         setLoadedImage(small, page, "Screenshot loaded. Click 'Analyze with Gemini' to auto-fill, or fill the fields and Save.");
     };
@@ -503,7 +503,7 @@ function grabClipboardImage() {
             if (data.success) {
                 Promise.all([
                     downscaleImage(data.image, 1400),
-                    downscaleImage(data.image, 2200),
+                    downscaleImage(data.image, 3000),
                 ]).then(([small, page]) =>
                     setLoadedImage(small, page, "Screenshot grabbed from macOS Clipboard!"));
             } else {
