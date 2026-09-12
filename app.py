@@ -274,32 +274,17 @@ def _crop_bbox(img, bbox, pad_frac=0.03):
     return img.crop((left, top, right, bottom))
 
 
-@app.route('/analyze-page', methods=['POST'])
-def analyze_page():
+def _detect_circled_questions(full_img, keys):
     """
-    Take one full worksheet/page screenshot, find every question whose
-    number is circled (the student's own "this one's wrong" mark), and
-    return one auto-filled draft per circled question — each with its own
-    cropped screenshot — for the user to review before saving.
+    Core of the circled-question detector, shared by the single-page and
+    multi-page (PDF) routes: one page image in, a list of question dicts
+    out (each with its own cropped "image", the fixed practice-gap
+    reasoning already applied). Raises nothing — returns (results, error).
+    On failure, results is [] and error is a user-facing message.
     """
-    keys = gemini_keys()
-    if not keys:
-        return jsonify({"success": False, "error": "Gemini API key is not configured. Please set it in the Settings panel."}), 400
-
-    data = request.json or {}
-    image_data = data.get("image")
-    if not image_data:
-        return jsonify({"success": False, "error": "No image data received"}), 400
-
-    if "," in image_data:
-        _, encoded_string = image_data.split(",", 1)
-    else:
-        encoded_string = image_data
-
-    try:
-        full_img = PILImage.open(io.BytesIO(base64.b64decode(encoded_string))).convert("RGB")
-    except Exception as e:
-        return jsonify({"success": False, "error": f"Could not read the uploaded page image: {e}"}), 400
+    buf = io.BytesIO()
+    full_img.save(buf, format="PNG")
+    encoded_string = base64.b64encode(buf.getvalue()).decode()
 
     prompt = f"""
 You are an expert SAT tutor scanning ONE full page of practice-test questions
@@ -372,7 +357,7 @@ Return strictly a JSON object: {{"questions": [ ... ]}}. No markdown fences.
 
     if parsed is None:
         prefix = f"All {len(keys)} keys failed. " if len(keys) > 1 else ""
-        return jsonify({"success": False, "error": prefix + last_error}), 200
+        return [], prefix + last_error
 
     questions = parsed.get("questions", []) if isinstance(parsed, dict) else []
     results = []
@@ -390,15 +375,115 @@ Return strictly a JSON object: {{"questions": [ ... ]}}. No markdown fences.
             try:
                 crop = _crop_bbox(full_img, [float(v) for v in bbox])
                 if crop is not None:
-                    buf = io.BytesIO()
-                    crop.save(buf, format="PNG")
-                    crop_b64 = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+                    cbuf = io.BytesIO()
+                    crop.save(cbuf, format="PNG")
+                    crop_b64 = "data:image/png;base64," + base64.b64encode(cbuf.getvalue()).decode()
             except Exception:
                 crop_b64 = None
         q["image"] = crop_b64  # None → frontend falls back to the full page image
         results.append(q)
 
-    return jsonify({"success": True, "questions": results, "key_used": idx})
+    return results, None
+
+
+@app.route('/analyze-page', methods=['POST'])
+def analyze_page():
+    """
+    Take one full worksheet/page screenshot, find every question whose
+    number is circled (the student's own "this one's wrong" mark), and
+    return one auto-filled draft per circled question — each with its own
+    cropped screenshot. The frontend saves these immediately; review
+    happens after the fact in the sheet, not before, since clicking
+    through every question one at a time was the actual bottleneck.
+    """
+    keys = gemini_keys()
+    if not keys:
+        return jsonify({"success": False, "error": "Gemini API key is not configured. Please set it in the Settings panel."}), 400
+
+    data = request.json or {}
+    image_data = data.get("image")
+    if not image_data:
+        return jsonify({"success": False, "error": "No image data received"}), 400
+
+    if "," in image_data:
+        _, encoded_string = image_data.split(",", 1)
+    else:
+        encoded_string = image_data
+
+    try:
+        full_img = PILImage.open(io.BytesIO(base64.b64decode(encoded_string))).convert("RGB")
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read the uploaded page image: {e}"}), 400
+
+    results, error = _detect_circled_questions(full_img, keys)
+    if error:
+        return jsonify({"success": False, "error": error}), 200
+    return jsonify({"success": True, "questions": results})
+
+
+@app.route('/analyze-pdf', methods=['POST'])
+def analyze_pdf():
+    """
+    Same detector as /analyze-page, run once per page of an uploaded PDF
+    (a printed test or worksheet packet, typically a handful of pages).
+    Each page is analyzed independently and in sequence; one page failing
+    doesn't stop the rest. Every result is tagged with its source page so
+    duplicate question numbers across pages stay distinguishable.
+    """
+    keys = gemini_keys()
+    if not keys:
+        return jsonify({"success": False, "error": "Gemini API key is not configured. Please set it in the Settings panel."}), 400
+
+    data = request.json or {}
+    pdf_data = data.get("pdf")
+    if not pdf_data:
+        return jsonify({"success": False, "error": "No PDF data received"}), 400
+
+    if "," in pdf_data:
+        _, encoded_string = pdf_data.split(",", 1)
+    else:
+        encoded_string = pdf_data
+
+    try:
+        import pymupdf
+        pdf_bytes = base64.b64decode(encoded_string)
+        doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Could not read the uploaded PDF: {e}"}), 400
+
+    MAX_PAGES = 20
+    if doc.page_count > MAX_PAGES:
+        doc.close()
+        return jsonify({"success": False,
+                        "error": f"That PDF has {doc.page_count} pages — this tool caps out at {MAX_PAGES} per upload to keep the scan fast. Split it and upload in batches."}), 400
+
+    TARGET_LONG_EDGE = 2200  # matches the single-page flow's resolution target
+    total_pages = doc.page_count
+    all_results = []
+    page_errors = []
+    for page_index in range(total_pages):
+        page = doc[page_index]
+        zoom = TARGET_LONG_EDGE / max(page.rect.width, page.rect.height)
+        pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
+        page_img = PILImage.frombytes("RGB", (pix.width, pix.height), pix.samples)
+
+        results, error = _detect_circled_questions(page_img, keys)
+        if error:
+            page_errors.append(f"page {page_index + 1}: {error}")
+            continue
+        for q in results:
+            q["Page"] = page_index + 1
+        all_results.extend(results)
+
+    doc.close()
+
+    if not all_results and page_errors:
+        return jsonify({"success": False, "error": "; ".join(page_errors)}), 200
+
+    resp = {"success": True, "questions": all_results, "page_count": total_pages}
+    if page_errors:
+        resp["warning"] = f"{len(page_errors)} page(s) failed to analyze: " + "; ".join(page_errors)
+    return jsonify(resp)
 
 
 @app.route('/save', methods=['POST'])
@@ -425,11 +510,15 @@ def save_row():
             
         ws = wb["Error Log"]
         
-        # Find first available row (where A is empty)
+        # Find first available row. Checking column A alone used to be safe
+        # (Source/Site was effectively always filled), but with Source
+        # removed a real saved row can legitimately have a blank column A —
+        # so a row only counts as available when ALL of its data columns
+        # (1-14; 15 is a template-prefilled formula, not a data signal, so
+        # it's excluded) are blank.
         target_row = None
         for r in range(2, 501):
-            val = ws.cell(row=r, column=1).value
-            if val is None or str(val).strip() == "":
+            if all(ws.cell(row=r, column=c).value in (None, "") for c in range(1, 15)):
                 target_row = r
                 break
                 

@@ -82,13 +82,22 @@
                         <span id="analyze-btn-text">Analyze with Gemini</span>
                     </button>
                 </div>
+
+                <button id="btn-upload-pdf" class="btn btn-secondary btn-block">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                    </svg>
+                    <span id="upload-pdf-btn-text">Upload PDF (multi-page, auto-detects + saves every circled question)</span>
+                </button>
+                <input type="file" id="input-pdf-file" accept="application/pdf" class="visually-hidden">
             </section>
 
-            <!-- Full-page mode: one review card per detected circled question -->
+            <!-- One card per detected circled question — saved automatically, shown here as a receipt -->
             <section id="page-results" class="section-card page-results hidden">
                 <div class="card-header">
                     <h2>Detected Mistakes</h2>
-                    <span class="card-subtitle" id="page-results-subtitle">Review each before saving</span>
+                    <span class="card-subtitle" id="page-results-subtitle">Saved automatically — scan for anything wrong</span>
                 </div>
                 <div id="page-cards" class="page-cards"></div>
                 <div class="action-buttons">

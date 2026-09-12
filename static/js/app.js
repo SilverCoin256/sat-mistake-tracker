@@ -12,6 +12,9 @@ const pageCardsEl = document.getElementById("page-cards");
 const btnSaveAll = document.getElementById("btn-save-all");
 const saveAllSpinner = document.getElementById("save-all-spinner");
 const saveAllBtnText = document.getElementById("save-all-btn-text");
+const btnUploadPdf = document.getElementById("btn-upload-pdf");
+const uploadPdfBtnText = document.getElementById("upload-pdf-btn-text");
+const inputPdfFile = document.getElementById("input-pdf-file");
 
 // Manual-only Error Type: user had no approach to the question.
 const UNSURE_OPTION = "Unsure — Didn't Know How to Solve";
@@ -236,6 +239,11 @@ function setupEventListeners() {
     // Drag & drop images — handles files dragged from Finder AND images
     // dragged straight out of a web page. The whole window is a drop target.
     function loadFromDataTransfer(dt) {
+        // 0) Dropped PDF from Finder — multi-page detect-and-save flow
+        if (dt.files && dt.files.length && dt.files[0].type === "application/pdf") {
+            handlePdfFile(dt.files[0]);
+            return;
+        }
         // 1) Dropped image file(s) from Finder
         if (dt.files && dt.files.length && dt.files[0].type.startsWith("image/")) {
             handleImageFile(dt.files[0]);
@@ -307,6 +315,12 @@ function setupEventListeners() {
     });
 
     btnGrabClipboard.addEventListener("click", grabClipboardImage);
+
+    btnUploadPdf.addEventListener("click", () => inputPdfFile.click());
+    inputPdfFile.addEventListener("change", () => {
+        if (inputPdfFile.files.length) handlePdfFile(inputPdfFile.files[0]);
+        inputPdfFile.value = "";  // allow re-selecting the same file next time
+    });
 
     // "Unsure how to solve" → disable Your Answer + Time Taken (not applicable).
     fieldErrorType.addEventListener("change", () => {
@@ -600,7 +614,8 @@ function analyzePage() {
             return;
         }
         renderPageCards(data.questions);
-        showAlert(`Found ${data.questions.length} circled question${data.questions.length === 1 ? "" : "s"}. Review before saving.`, "success");
+        showAlert(`Found ${data.questions.length} circled question${data.questions.length === 1 ? "" : "s"} — saving to the tracker now.`, "success");
+        saveAllPageCards();
     })
     .catch(err => showAlert("Error calling Gemini API backend: " + err.message, "error"))
     .finally(() => {
@@ -608,6 +623,50 @@ function analyzePage() {
         analyzeSpinner.classList.add("hidden");
         analyzeBtnText.textContent = "Detect Circled Questions";
     });
+}
+
+// PDF upload: one or more full pages of circled questions, analyzed page by
+// page server-side and returned as a single aggregated list. Auto-saves the
+// same as single-page mode — the whole point is not clicking through each one.
+function handlePdfFile(file) {
+    if (!file || file.type !== "application/pdf") {
+        showAlert("That's not a PDF file.", "error");
+        return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        btnUploadPdf.disabled = true;
+        chkPageMode.checked = false;  // PDF flow is independent of the single-image toggle
+        uploadPdfBtnText.textContent = `Scanning ${file.name}... this can take a minute for several pages`;
+
+        fetch("/analyze-pdf", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pdf: e.target.result })
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (!data.success) {
+                showAlert(data.error || "PDF analysis failed.", "error");
+                return;
+            }
+            if (data.warning) showAlert(data.warning, "warning");
+            if (!data.questions.length) {
+                showAlert(`Scanned ${data.page_count} page${data.page_count === 1 ? "" : "s"} — no circled question numbers found.`, "warning");
+                pageResults.classList.add("hidden");
+                return;
+            }
+            renderPageCards(data.questions);
+            showAlert(`Found ${data.questions.length} circled question${data.questions.length === 1 ? "" : "s"} across ${data.page_count} pages — saving to the tracker now.`, "success");
+            saveAllPageCards();
+        })
+        .catch(err => showAlert("Error calling Gemini API backend: " + err.message, "error"))
+        .finally(() => {
+            btnUploadPdf.disabled = false;
+            uploadPdfBtnText.textContent = "Upload PDF (multi-page, auto-detects + saves every circled question)";
+        });
+    };
+    reader.readAsDataURL(file);
 }
 
 function renderPageCards(questions) {
@@ -620,12 +679,14 @@ function renderPageCards(questions) {
         const correct = (q["Correct Answer"] || "").toString();
         const yours = (q["Your Answer"] || "").toString();
 
+        const label = q["Page"] ? `P${q["Page"]} · Q${q["Question Number"] || "?"}` : `Q${q["Question Number"] || "?"}`;
+
         const card = document.createElement("div");
         card.className = "page-card";
         card.dataset.id = id;
         card.innerHTML = `
             <div class="page-card-head">
-                <span class="qnum">Q${escapeHtml(q["Question Number"] || "?")}</span>
+                <span class="qnum">${escapeHtml(label)}</span>
                 <span class="status-pill">pending</span>
                 <button type="button" class="page-card-remove" title="Not actually wrong — remove">&times;</button>
             </div>
@@ -726,9 +787,14 @@ function escapeHtml(s) {
 }
 
 function updatePageResultsSubtitle() {
-    pageResultsSubtitle.textContent = pageQueue.length
-        ? `${pageQueue.length} question${pageQueue.length === 1 ? "" : "s"} ready to save`
-        : "All done";
+    const anySaved = pageCardsEl.querySelector(".page-card.saved");
+    if (!pageQueue.length) {
+        pageResultsSubtitle.textContent = "Saved automatically — scan for anything wrong";
+    } else if (anySaved) {
+        pageResultsSubtitle.textContent = `${pageQueue.length} failed to save — click "Save All" to retry`;
+    } else {
+        pageResultsSubtitle.textContent = `${pageQueue.length} question${pageQueue.length === 1 ? "" : "s"} detected — saving...`;
+    }
 }
 
 function cardToPayload(cardEl, image) {
@@ -759,9 +825,14 @@ async function saveAllPageCards() {
     saveAllSpinner.classList.remove("hidden");
     let ok = 0, failed = 0;
 
-    for (const item of [...pageQueue]) {
+    const snapshot = [...pageQueue];
+    for (const item of snapshot) {
+        // The card may have been removed (user clicked ×) after this loop's
+        // snapshot was taken but before its turn — don't save it anyway.
+        if (!document.body.contains(item.cardEl)) continue;
+
         const payload = cardToPayload(item.cardEl, item.image);
-        saveAllBtnText.textContent = `Saving ${ok + failed + 1} / ${pageQueue.length}...`;
+        saveAllBtnText.textContent = `Saving ${ok + failed + 1} / ${snapshot.length}...`;
         try {
             const res = await fetch("/save", {
                 method: "POST",
