@@ -50,13 +50,17 @@ HEADERS = [
     "Fix Strategy", "Time Taken (Sec)", "Retest Status", "Notes", "Screenshot",
 ]
 
-# Column set for the dedicated visual-review tab — the fields that matter
-# when reviewing a mistake next to its screenshot (full analysis stays in
-# the main Mistakes tab).
+# Column set for the dedicated visual-review tab. Screenshot leads (it's the
+# point of this tab), Open is a real hyperlink to the raw image — Sheets'
+# =IMAGE() cells render a picture but copying one only copies the formula
+# text, never actual pixels (confirmed empirically: `clipboard info` after
+# Cmd+C on an =IMAGE() cell shows HTML/text only, no image type at all).
+# Opening the raw URL in a new tab gives a real <img>, which Chrome's
+# right-click "Copy image" puts on the clipboard as actual image bytes.
 SCREENSHOTS_TAB = "Screenshots"
 SCREENSHOTS_HEADERS = [
-    "Logged At", "Source", "Section", "Topic", "Subtopic",
-    "Correct", "Selected", "Error Type", "Fix Strategy", "Screenshot",
+    "Screenshot", "Open", "Logged At", "Source", "Section", "Topic",
+    "Subtopic", "Correct", "Selected", "Error Type", "Fix Strategy",
 ]
 
 
@@ -143,7 +147,9 @@ def _upload_screenshot(creds, screenshot_path):
 
 
 def _format_screenshots_tab(creds, spreadsheet_id, tab_id):
-    """One-time visual formatting for a freshly-created Screenshots tab."""
+    """One-time visual formatting for a freshly-created Screenshots tab.
+    Screenshot is the dominant column (big, first, centered) since it's the
+    entire point of this tab; everything else is compact reference data."""
     from googleapiclient.discovery import build
     svc = build("sheets", "v4", credentials=creds, cache_discovery=False)
     requests = [
@@ -159,16 +165,34 @@ def _format_screenshots_tab(creds, spreadsheet_id, tab_id):
                 "textFormat": {"foregroundColor": _hex("FFFFFF"), "bold": True, "fontSize": 10},
             }},
             "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,textFormat)"}},
+        {"repeatCell": {
+            "range": {"sheetId": tab_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 1},
+            "cell": {"userEnteredFormat": {"backgroundColor": _hex("0B5FA5"), "textFormat": {"fontSize": 12, "bold": True}}},
+            "fields": "userEnteredFormat(backgroundColor,textFormat)"}},
         {"updateDimensionProperties": {
             "range": {"sheetId": tab_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1},
-            "properties": {"pixelSize": 34}, "fields": "pixelSize"}},
+            "properties": {"pixelSize": 40}, "fields": "pixelSize"}},
         {"updateDimensionProperties": {
             "range": {"sheetId": tab_id, "dimension": "ROWS", "startIndex": 1, "endIndex": 500},
-            "properties": {"pixelSize": 260}, "fields": "pixelSize"}},
+            "properties": {"pixelSize": 420}, "fields": "pixelSize"}},
+        {"repeatCell": {
+            "range": {"sheetId": tab_id, "startRowIndex": 1, "endRowIndex": 500, "startColumnIndex": 0, "endColumnIndex": 1},
+            "cell": {"userEnteredFormat": {"horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE"}},
+            "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment)"}},
+        {"repeatCell": {
+            "range": {"sheetId": tab_id, "startRowIndex": 1, "endRowIndex": 500, "startColumnIndex": 1, "endColumnIndex": 2},
+            "cell": {"userEnteredFormat": {
+                "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
+                "textFormat": {"foregroundColor": _hex("1155CC"), "bold": True, "fontSize": 11}}},
+            "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment,textFormat)"}},
+        {"repeatCell": {
+            "range": {"sheetId": tab_id, "startRowIndex": 1, "endRowIndex": 500, "startColumnIndex": 2, "endColumnIndex": 11},
+            "cell": {"userEnteredFormat": {"verticalAlignment": "MIDDLE", "wrapStrategy": "WRAP", "textFormat": {"fontSize": 10}}},
+            "fields": "userEnteredFormat(verticalAlignment,wrapStrategy,textFormat)"}},
     ]
-    # Logged At, Source, Section, Topic, Subtopic, Correct, Selected,
-    # Error Type, Fix Strategy, Screenshot
-    widths = [130, 175, 100, 150, 175, 68, 68, 185, 195, 440]
+    # Screenshot, Open, Logged At, Source, Section, Topic, Subtopic,
+    # Correct, Selected, Error Type, Fix Strategy
+    widths = [620, 80, 125, 165, 95, 145, 170, 65, 65, 180, 190]
     for i, w in enumerate(widths):
         requests.append({"updateDimensionProperties": {
             "range": {"sheetId": tab_id, "dimension": "COLUMNS", "startIndex": i, "endIndex": i + 1},
@@ -196,6 +220,8 @@ def _append_screenshot_row(creds, fields, image_url):
     from datetime import datetime
     ws = _open_screenshots_worksheet(creds)
     row = [
+        f'=IMAGE("{image_url}")',
+        f'=HYPERLINK("{image_url}","Open ↗")',
         datetime.now().strftime("%Y-%m-%d %H:%M"),
         _cell(fields.get("source_site", "")),
         _cell(fields.get("section", "")),
@@ -205,7 +231,6 @@ def _append_screenshot_row(creds, fields, image_url):
         _cell(fields.get("your_answer", "")),
         _cell(fields.get("error_type", "")),
         _cell(fields.get("fix_strategy", "")),
-        f'=IMAGE("{image_url}")',
     ]
     ws.append_row(row, value_input_option="USER_ENTERED")
 
