@@ -176,22 +176,13 @@ def friendly_gemini_error(response):
     return f"Gemini API error (HTTP {response.status_code}): {api_msg}"
 
 
-@app.route('/analyze', methods=['POST'])
-def analyze():
-    keys = gemini_keys()
-    if not keys:
-        return jsonify({"success": False, "error": "Gemini API key is not configured. Please set it in the Settings panel."}), 400
-
-    data = request.json or {}
-    image_data = data.get("image")
-    if not image_data:
-        return jsonify({"success": False, "error": "No image data received"}), 400
-
-    if "," in image_data:
-        header, encoded_string = image_data.split(",", 1)
-    else:
-        encoded_string = image_data
-
+def _analyze_single_question(encoded_string, keys):
+    """Core of /analyze: one already-cropped question image in, the
+    extracted-field dict out. Shared with the folder watcher so a dropped
+    single-question screenshot gets the same extraction the manual-upload
+    flow uses. Returns (parsed_dict, error, key_used_idx) — parsed_dict is
+    None on failure.
+    """
     headers = {"Content-Type": "application/json"}
 
     prompt = f"""
@@ -248,14 +239,36 @@ Do not wrap the output in markdown block wrappers. Return raw JSON content only.
                 result = response.json()
                 content = result["candidates"][0]["content"]["parts"][0]["text"]
                 parsed = json.loads(content.strip())
-                return jsonify({"success": True, "analysis": parsed, "key_used": idx})
+                return parsed, None, idx
             last_error = friendly_gemini_error(response)
         except Exception as e:
             last_error = f"Could not reach Gemini (key {idx}): {e}"
         # otherwise loop to the next key
 
     prefix = f"All {len(keys)} keys failed. " if len(keys) > 1 else ""
-    return jsonify({"success": False, "error": prefix + last_error}), 200
+    return None, prefix + last_error, None
+
+
+@app.route('/analyze', methods=['POST'])
+def analyze():
+    keys = gemini_keys()
+    if not keys:
+        return jsonify({"success": False, "error": "Gemini API key is not configured. Please set it in the Settings panel."}), 400
+
+    data = request.json or {}
+    image_data = data.get("image")
+    if not image_data:
+        return jsonify({"success": False, "error": "No image data received"}), 400
+
+    if "," in image_data:
+        _, encoded_string = image_data.split(",", 1)
+    else:
+        encoded_string = image_data
+
+    parsed, error, key_used = _analyze_single_question(encoded_string, keys)
+    if error:
+        return jsonify({"success": False, "error": error}), 200
+    return jsonify({"success": True, "analysis": parsed, "key_used": key_used})
 
 
 def _crop_bbox(img, bbox, pad_top=0.04, pad_bottom=0.14, pad_left=0.04, pad_right=0.10):
@@ -518,27 +531,31 @@ def analyze_pdf():
     return jsonify(resp)
 
 
-@app.route('/save', methods=['POST'])
-def save_row():
+def save_mistake_row(data):
+    """Core of /save: a field dict (+ optional base64 "image") in, a
+    jsonify-able result dict + HTTP status out. Shared with the folder
+    watcher so an auto-detected question is written to the workbook and
+    synced to the Google Sheet through the exact same path a manual Save
+    click uses.
+    """
     try:
         ensure_excel_exists()
-        
-        data = request.json or {}
+
         image_data = data.get("image")
 
-        # Reject fully-empty submissions — otherwise a stray Save click logs a
+        # Reject fully-empty submissions — otherwise a stray Save call logs a
         # blank row locally AND pushes a blank row to the shared Google Sheet.
         _text_fields = ("source_site", "section", "correct_answer", "your_answer",
                         "topic", "subtopic", "question_type", "error_type",
                         "root_cause", "fix_strategy", "time_taken", "notes")
         if not image_data and not any(str(data.get(f, "")).strip() for f in _text_fields):
-            return jsonify({"success": False,
-                            "error": "Nothing to save — fill in at least one field or attach a screenshot."}), 400
+            return {"success": False,
+                    "error": "Nothing to save — fill in at least one field or attach a screenshot."}, 400
 
         # Load the workbook
         wb = openpyxl.load_workbook(EXCEL_PATH)
         if "Error Log" not in wb.sheetnames:
-            return jsonify({"success": False, "error": "Spreadsheet does not contain 'Error Log' sheet"}), 500
+            return {"success": False, "error": "Spreadsheet does not contain 'Error Log' sheet"}, 500
             
         ws = wb["Error Log"]
         
@@ -644,14 +661,20 @@ def save_row():
         elif not sync.get("skipped"):
             msg += f" (Google Sheet sync failed: {sync.get('error')})"
 
-        return jsonify({
+        return {
             "success": True,
             "message": msg,
             "row": target_row,
             "gsheet": sync
-        })
+        }, 200
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        return {"success": False, "error": str(e)}, 500
+
+
+@app.route('/save', methods=['POST'])
+def save_row():
+    result, status = save_mistake_row(request.json or {})
+    return jsonify(result), status
 
 if __name__ == "__main__":
     ensure_excel_exists()
