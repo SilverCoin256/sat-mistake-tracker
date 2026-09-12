@@ -208,13 +208,12 @@ IMPORTANT RULES FOR FIELD MATCHING:
 - Fix Strategy: Suggest the most likely choice from this list: {json.dumps(FIX_STRATEGIES)}
 
 For the other fields, autofigure them from the visual cues:
-- Source / Site: Detect the source platform (e.g. "Bluebook Test 1", "Khan Academy", "UWorld", etc. from logos, colors, fonts, or headers). If not clear, default to a descriptive guess.
 - Correct Answer: The correct answer (e.g. A, B, C, D or a number if it is a Math student-produced response).
 - Your Answer: The answer selected by the student (look for red X markings, selected option states, or user-written inputs). If not visible, return "".
 - Notes: A concise 1-sentence description of the question concept and why the student might have missed it (e.g., "Systems of linear equations with no solution, misidentified slope relationship").
 
 Return your response strictly as a JSON object containing the following keys:
-"Source / Site", "Section", "Correct Answer", "Your Answer", "Topic", "Subtopic", "Question Type", "Error Type", "Root Cause", "Fix Strategy", "Notes"
+"Section", "Correct Answer", "Your Answer", "Topic", "Subtopic", "Question Type", "Error Type", "Root Cause", "Fix Strategy", "Notes"
 
 Do not wrap the output in markdown block wrappers. Return raw JSON content only.
 """
@@ -325,9 +324,6 @@ For EACH circled question, return one object with:
 - "bbox": [ymin, xmin, ymax, xmax] on a 0-1000 normalized grid, tightly
   bounding that ENTIRE question — its number, prompt text, and all answer
   choices — but not neighboring questions.
-- "Source / Site": guess the platform/source from visual cues (e.g.
-  "Bluebook Test 1", "Handwritten Worksheet", "Khan Academy"). Default to a
-  short descriptive guess if unclear.
 - "Section": exactly "Math" or "Reading & Writing"
 - "Correct Answer": solve it yourself — the actual correct answer (e.g. A/B/C/D
   or a number for a student-produced response)
@@ -336,10 +332,12 @@ For EACH circled question, return one object with:
 - "Topic": EXACTLY one of {json.dumps(TOPICS)}
 - "Subtopic": EXACTLY one of {json.dumps(SUBTOPICS)}
 - "Question Type": EXACTLY one of {json.dumps(QUESTION_TYPES)}
-- "Error Type": best guess from {json.dumps(ERROR_TYPES)}
-- "Root Cause": best guess from {json.dumps(ROOT_CAUSES)}
-- "Fix Strategy": best guess from {json.dumps(FIX_STRATEGIES)}
-- "Notes": one concise sentence on the concept and likely reason for the miss
+- "Notes": one concise sentence on the concept tested (e.g. "Systems of linear
+  equations with no solution — parallel-line slope condition").
+
+Do NOT include Error Type, Root Cause, or Fix Strategy — every circled
+question in this mode is logged as a practice gap by default (the caller
+fills those in), not a per-question diagnosis.
 
 Return strictly a JSON object: {{"questions": [ ... ]}}. No markdown fences.
 """
@@ -379,6 +377,13 @@ Return strictly a JSON object: {{"questions": [ ... ]}}. No markdown fences.
     questions = parsed.get("questions", []) if isinstance(parsed, dict) else []
     results = []
     for q in questions[:30]:  # sanity cap
+        # Full-page mode's premise: a circled question means the concept
+        # needs more practice, full stop — not a per-question AI diagnosis.
+        # Fixed regardless of anything Gemini put in these keys.
+        q["Error Type"] = "Knowledge Gap (Concept Untrained)"
+        q["Root Cause"] = "Concept was studied but not practiced enough"
+        q["Fix Strategy"] = "Complete 20+ practice questions on this specific subtopic"
+
         bbox = q.get("bbox")
         crop_b64 = None
         if isinstance(bbox, list) and len(bbox) == 4:

@@ -36,7 +36,6 @@ const alertText = document.getElementById("alert-text");
 const alertClose = document.getElementById("alert-close");
 
 // Form Fields
-const fieldSource = document.getElementById("field-source");
 const fieldSection = document.getElementById("field-section");
 const selectCorrect = document.getElementById("select-correct");
 const fieldCorrect = document.getElementById("field-correct");
@@ -368,7 +367,6 @@ function setupEventListeners() {
         
         const payload = {
             image: currentImageBase64,
-            source_site: fieldSource.value.trim(),
             section: fieldSection.value,
             correct_answer: fieldCorrect.value.trim(),
             your_answer: fieldYours.value.trim(),
@@ -522,7 +520,6 @@ function applyUnsureMode(on) {
 
 // Populate UI form inputs with Gemini analysis results
 function populateAnalysisFields(res) {
-    if (res["Source / Site"]) fieldSource.value = res["Source / Site"];
     if (res["Section"]) {
         fieldSection.value = res["Section"];
         // Enable correct inputs configuration based on section
@@ -633,10 +630,6 @@ function renderPageCards(questions) {
                 <button type="button" class="page-card-remove" title="Not actually wrong — remove">&times;</button>
             </div>
             ${image ? `<img class="page-card-thumb" src="${image}">` : ""}
-            <div class="form-group">
-                <label>Source / Site</label>
-                <input type="text" data-field="source_site" value="${escapeHtml(q["Source / Site"] || "")}">
-            </div>
             <div class="split-row">
                 <div class="form-group">
                     <label>Section</label>
@@ -742,7 +735,6 @@ function cardToPayload(cardEl, image) {
     const get = (f) => cardEl.querySelector(`[data-field="${f}"]`).value.trim();
     return {
         image,
-        source_site: get("source_site"),
         section: get("section"),
         correct_answer: get("correct_answer"),
         your_answer: get("your_answer"),
