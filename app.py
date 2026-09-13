@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import time
 import base64
 import json
 import requests
@@ -176,6 +177,26 @@ def friendly_gemini_error(response):
     return f"Gemini API error (HTTP {response.status_code}): {api_msg}"
 
 
+def _post_gemini_with_retry(url, headers, payload, timeout, max_retries=2, backoff_seconds=25):
+    """POST to Gemini, retrying on 429 (rate limit) before giving up.
+
+    The free-tier quota observed in practice is small enough (~20 requests
+    per rolling window) to hit routinely during a burst of screenshots —
+    a full worksheet page, a multi-page PDF, or several auto-drops in a
+    row via the folder watcher all fire many calls back to back. A 429 is
+    transient, not a bad key or bad image, so it shouldn't be treated the
+    same as a hard failure (which the caller reports immediately and,
+    for the watcher, files under _failed/ with no retry of its own).
+    """
+    response = None
+    for attempt in range(max_retries + 1):
+        response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        if response.status_code != 429 or attempt == max_retries:
+            return response
+        time.sleep(backoff_seconds)
+    return response
+
+
 def _analyze_single_question(encoded_string, keys):
     """Core of /analyze: one already-cropped question image in, the
     extracted-field dict out. Shared with the folder watcher so a dropped
@@ -234,7 +255,7 @@ Do not wrap the output in markdown block wrappers. Return raw JSON content only.
     last_error = "No Gemini keys available."
     for idx, api_key in enumerate(keys, 1):
         try:
-            response = requests.post(f"{base_url}?key={api_key}", headers=headers, json=payload, timeout=120)
+            response = _post_gemini_with_retry(f"{base_url}?key={api_key}", headers, payload, timeout=120)
             if response.status_code == 200:
                 result = response.json()
                 content = result["candidates"][0]["content"]["parts"][0]["text"]
@@ -390,8 +411,8 @@ Return strictly a JSON object: {{"questions": [ ... ]}}. No markdown fences.
     parsed = None
     for idx, api_key in enumerate(keys, 1):
         try:
-            response = requests.post(f"{base_url}?key={api_key}", headers={"Content-Type": "application/json"},
-                                     json=payload, timeout=180)
+            response = _post_gemini_with_retry(f"{base_url}?key={api_key}", {"Content-Type": "application/json"},
+                                                payload, timeout=180)
             if response.status_code == 200:
                 content = response.json()["candidates"][0]["content"]["parts"][0]["text"]
                 parsed = json.loads(content.strip())
