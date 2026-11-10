@@ -1,19 +1,15 @@
 # SAT Mistake Tracker
 
-A local desktop helper for logging Digital-SAT mistakes. Paste or drop a
-screenshot of a question you missed, let Gemini auto-classify it (topic,
-subtopic, error type, root cause, fix strategy…), review, and save it to a
-spreadsheet with the screenshot embedded. Optionally **sync live to a Google
-Sheet** so a tutor/mentor can follow along and comment in real time.
+Log missed Digital SAT questions in a local Excel workbook. Paste a screenshot, fill in the mistake fields or let Gemini suggest them, then review the entry before saving. Google Sheets sync is optional.
 
-> Runs entirely on your machine. Your API key and data never leave it, except
-> the rows you choose to push to your own Google Sheet.
+## Where the data goes
+
+Manual logging saves the entry and screenshot locally. AI analysis sends the screenshot to Gemini using a configured API key. Google Sheets sync sends the logged fields to the configured sheet. When you also configure a Cloud Storage bucket for screenshots, the app uploads screenshots to that bucket. The setup below makes those images accessible to anyone with their URLs.
 
 ## Features
 
 - Paste (`Cmd/Ctrl+V`), drag-and-drop, or grab-from-clipboard a screenshot.
-- One-click **AI analysis** (Gemini) auto-fills the mistake fields; multiple
-  API keys are tried in order (failover). AI is optional — manual logging works.
+- Optional Gemini analysis suggests values for the mistake fields. If a configured API key fails, the app tries the next one.
 - Saves to `SAT_Performance_Tracker.xlsx` with the screenshot thumbnail + link.
 - "Unsure how to solve" error type that disables the fields that don't apply.
 - Optional **live Google Sheet sync** for mentor review.
@@ -82,9 +78,8 @@ one link and watches it update live. Setup (~10 min, one time):
    GCS_BUCKET=<optional bucket name>
    ```
 7. Restart the app. From now on every saved mistake also lands in the shared
-   Sheet, with a second **Screenshots** tab embedding each image inline via
-   `=IMAGE()`. If Google is unreachable or unconfigured, local logging still
-   works.
+   Sheet. If you set up the bucket in step 5, the **Screenshots** tab embeds
+   uploaded images with `=IMAGE()`. Local logging works independently of Google Sheets.
 
 ## Security
 
